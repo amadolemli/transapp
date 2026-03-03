@@ -8,7 +8,8 @@ import {
   Home, History, PlusCircle, User, Search, Filter,
   Phone, MapPin, Calendar, CheckCircle, XCircle, Send, Camera,
   LogOut, Edit3, Star, Copy, Bell, HelpCircle, ChevronDown, FileText,
-  PieChart, Activity, AlertCircle, Users, BookOpen, Landmark, Trash2
+  PieChart, Activity, AlertCircle, Users, BookOpen, Landmark, Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import { useAppContext, TransferRoute } from './AppContext';
 import { supabase } from './supabase';

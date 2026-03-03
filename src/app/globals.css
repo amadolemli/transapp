@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+:root {
+  /* Premium Palette */
+  --background: #F2F2F7; /* iOS Light Gray */
+  --foreground: #1C1C1E; /* iOS System Dark */
+  --primary: #1A2B3D;    /* Deep Navy */
+  --secondary: #FFD700;  /* Gold for Profit */
+  --surface: #FFFFFF;
+  --surface-secondary: #E5E5EA;
+  
+  /* Status Colors */
+  --status-pending: #FFCC00;
+  --status-paid: #34C759;
+  --status-error: #FF3B30;
+  
+  /* Glassmorphism */
+  --glass: rgba(255, 255, 255, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.3);
+  --glass-blur: 20px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-surface: var(--surface);
+  --color-surface-secondary: var(--surface-secondary);
+  --color-status-pending: var(--status-pending);
+  --color-status-paid: var(--status-paid);
+  --color-status-error: var(--status-error);
+  
+  --radius-ios-card: 20px;
+  --radius-ios-btn: 14px;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow-x: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+.glass-nav {
+  background: var(--glass);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-top: 0.5px solid var(--glass-border);
+}
+
+.ios-card {
+  background: var(--surface);
+  border-radius: var(--radius-ios-card);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  padding: 1.5rem;
+}
+
+.iphone-bottom-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}

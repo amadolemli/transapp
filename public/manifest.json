@@ -1,0 +1,21 @@
+{
+  "name": "TransApp",
+  "short_name": "TransApp",
+  "description": "Système professionnel de gestion de transferts de fonds",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#B41D2B",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -85,6 +85,7 @@ interface AppContextType {
     deleteBulkTransfer: (id: string) => Promise<void>;
     confirmBulkTransfer: (id: string, amountCNY: number) => Promise<void>;
     partnerReserve: number;
+    encaissement: number;
     routeRates: Record<string, number>;
     updateRouteRate: (route: string, rate: number) => Promise<void>;
     deleteRouteRate: (route: string) => Promise<void>;
@@ -119,21 +120,160 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await supabase.from('settings').upsert({ key: 'receipt_settings', value: settings, admin_email: activeAdminScope });
     };
 
-    // The scope of data is defined by the admin_email
-    // If Admin: their own email
-    // If Partner: their admin_email field
+    // Dynamic calculations
     const activeAdminScope = currentUser?.role === 'admin' ? currentUser.email : currentUser?.admin_email;
 
+    // Calculate Partner Reserve (The value of their remaining CNY in CFA)
+    const partnerReserve = bulkTransfers
+        .filter(b => b.status === 'Confirmé' && (currentUser?.role === 'admin' ? true : b.partnerEmail === currentUser?.email))
+        .reduce((acc, b) => acc + ((b.remainingCNY || 0) * (b.rate || 0)), 0);
+
+    // Calculate Encaissement (Cash on Hand)
+    // Formula: Sum of Client Transactions (CFA) - Sum of Deposits to Admin (CFA)
+    const encaissement = (() => {
+        if (!currentUser) return 0;
+
+        let received = 0;
+        let deposited = 0;
+
+        if (currentUser.role === 'admin') {
+            received = transactions.reduce((acc, t) => acc + t.amount, 0);
+            deposited = bulkTransfers.filter(b => b.status !== 'Rejeté').reduce((acc, b) => acc + b.amountCFA, 0);
+        } else {
+            const targetEmail = currentUser.email;
+            received = transactions.filter(t => t.partnerEmail === targetEmail).reduce((acc, t) => acc + t.amount, 0);
+            deposited = bulkTransfers.filter(b => b.partnerEmail === targetEmail && b.status !== 'Rejeté').reduce((acc, b) => acc + b.amountCFA, 0);
+        }
+
+        return received - deposited;
+    })();
+
     useEffect(() => {
-        if (!currentUser || !activeAdminScope) return;
+        // 1. Initial manual session check (for partners logged in via DB fallback)
+        const checkManualSession = async () => {
+            const manualSession = localStorage.getItem('transapp_manual_session');
+            if (manualSession) {
+                try {
+                    const { email, password } = JSON.parse(manualSession);
+                    console.log('Restoring manual session for:', email);
+                    const { data: dbUser } = await supabase.from('accounts')
+                        .select('*')
+                        .eq('email', email.toLowerCase())
+                        .eq('password', password)
+                        .single();
+
+                    if (dbUser && dbUser.is_active) {
+                        setCurrentUser({
+                            id: dbUser.id,
+                            email: dbUser.email,
+                            name: dbUser.name,
+                            password: dbUser.password,
+                            role: dbUser.role,
+                            isActive: dbUser.is_active,
+                            customRate: dbUser.custom_rate,
+                            routes: dbUser.routes || [],
+                            admin_email: dbUser.admin_email
+                        });
+                    } else {
+                        localStorage.removeItem('transapp_manual_session');
+                    }
+                } catch (e) {
+                    localStorage.removeItem('transapp_manual_session');
+                }
+            }
+        };
+
+        // 2. Listen for auth changes (official Supabase Auth)
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+            console.log('Auth event:', event, session?.user?.email);
+
+            if (event === 'SIGNED_OUT') {
+                setCurrentUser(null);
+                setTransactions([]);
+                setAccounts([]);
+                setBulkTransfers([]);
+                localStorage.removeItem('transapp_manual_session');
+                return;
+            }
+
+            if (session?.user) {
+                // If official auth is active, clear any manual session to avoid confusion
+                localStorage.removeItem('transapp_manual_session');
+
+                // Fetch profile
+                const { data: profile, error } = await supabase.from('accounts')
+                    .select('*')
+                    .eq('email', session.user.email?.toLowerCase())
+                    .single();
+
+                if (error) {
+                    console.error('Error fetching profile:', error);
+                    return;
+                }
+
+                if (profile && profile.is_active) {
+                    setCurrentUser({
+                        id: profile.id,
+                        email: profile.email,
+                        name: profile.name,
+                        password: profile.password,
+                        role: profile.role,
+                        isActive: profile.is_active,
+                        customRate: profile.custom_rate,
+                        routes: profile.routes || [],
+                        admin_email: profile.admin_email
+                    });
+                } else if (profile && !profile.is_active) {
+                    await supabase.auth.signOut();
+                    setCurrentUser(null);
+                }
+            }
+        });
+
+        checkManualSession();
+        return () => subscription.unsubscribe();
+    }, []);
+
+    useEffect(() => {
+        if (!currentUser || !activeAdminScope) {
+            setIsLoading(false);
+            return;
+        }
 
         const loadData = async () => {
             setIsLoading(true);
+            console.log('Loading app data for scope:', activeAdminScope);
+
             try {
-                // Fetch transactions for this admin scope
-                const { data: txData } = await supabase.from('transactions').select('*').eq('admin_email', activeAdminScope).order('date', { ascending: false });
-                if (txData) {
-                    setTransactions(txData.map(t => ({
+                // Fetch everything in parallel
+                const [txRes, accRes, bulkRes, clientRes, settingsRes] = await Promise.all([
+                    supabase.from('transactions')
+                        .select('*')
+                        .eq('admin_email', activeAdminScope)
+                        .order('date', { ascending: false }),
+
+                    supabase.from('accounts')
+                        .select('*')
+                        .or(`admin_email.eq."${activeAdminScope}",email.eq."${activeAdminScope}"`),
+
+                    supabase.from('bulk_transfers')
+                        .select('*')
+                        .eq('admin_email', activeAdminScope)
+                        .order('date', { ascending: false }),
+
+                    supabase.from('client_records')
+                        .select('*')
+                        .eq('admin_email', activeAdminScope)
+                        .order('date', { ascending: false }),
+
+                    supabase.from('settings')
+                        .select('*')
+                        .eq('admin_email', activeAdminScope)
+                ]);
+
+                // Handle transactions
+                if (txRes.data) {
+                    setTransactions(txRes.data.map(t => ({
                         id: t.id,
                         name: t.name,
                         phone: t.phone,
@@ -153,13 +293,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                     })));
                 }
 
-                // Fetch accounts linked to this admin scope (including the admin themselves)
-                const { data: accData } = await supabase.from('accounts')
-                    .select('*')
-                    .or(`admin_email.eq.${activeAdminScope},email.eq.${activeAdminScope}`);
-
-                if (accData) {
-                    setAccounts(accData.map(a => ({
+                // Handle accounts
+                if (accRes.data) {
+                    setAccounts(accRes.data.map(a => ({
                         id: a.id,
                         email: a.email,
                         name: a.name,
@@ -172,10 +308,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                     })));
                 }
 
-                // Fetch bulk transfers
-                const { data: bulkData } = await supabase.from('bulk_transfers').select('*').eq('admin_email', activeAdminScope).order('date', { ascending: false });
-                if (bulkData) {
-                    setBulkTransfers(bulkData.map(b => ({
+                // Handle bulk transfers
+                if (bulkRes.data) {
+                    setBulkTransfers(bulkRes.data.map(b => ({
                         id: b.id,
                         partnerEmail: b.partner_email,
                         amountCFA: b.amount_cfa,
@@ -189,67 +324,127 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                     })));
                 }
 
-                // Fetch settings for this admin
-                const { data: settingsData } = await supabase.from('settings').select('*').eq('admin_email', activeAdminScope);
-                if (settingsData) {
-                    const gRate = settingsData.find(s => s.key === 'global_rate');
+                // Handle client records
+                if (clientRes.data) {
+                    setClientRecords(clientRes.data.map(r => ({
+                        id: r.id,
+                        clientName: r.client_name,
+                        amount: r.amount,
+                        type: r.type,
+                        partnerEmail: r.partner_email,
+                        date: r.date,
+                        status: r.status,
+                        admin_email: r.admin_email
+                    })));
+                }
+
+                // Handle settings
+                if (settingsRes.data) {
+                    const gRate = settingsRes.data.find(s => s.key === 'global_rate');
                     if (gRate) _setGlobalRate(parseFloat(gRate.value));
 
-                    const rRates = settingsData.find(s => s.key === 'route_rates');
+                    const rRates = settingsRes.data.find(s => s.key === 'route_rates');
                     if (rRates) setRouteRates(rRates.value);
 
-                    const rSettings = settingsData.find(s => s.key === 'receipt_settings');
-                    if (rSettings) setReceiptSettings(rSettings.value);
+                    const rSettings = settingsRes.data.find(s => s.key === 'receipt_settings');
+                    if (rSettings) setReceiptSettingsState(rSettings.value);
                 }
             } catch (error) {
-                console.error('Error loading data:', error);
+                console.error('Critical error loading app data:', error);
             } finally {
                 setIsLoading(false);
             }
         };
 
         loadData();
-    }, [currentUser, activeAdminScope]);
+    }, [currentUser?.email, activeAdminScope]); // Use primitive values to avoid ref-loops
 
     const login = async (email: string, password?: string) => {
         setIsLoading(true);
         try {
-            const { data, error } = await supabase.from('accounts').select('*').eq('email', email.toLowerCase()).single();
+            const lowerEmail = email.toLowerCase();
 
-            if (error || !data) {
-                return { success: false, error: 'Compte introuvable' };
-            }
-
-            if (!data.is_active) {
-                return { success: false, error: 'Compte suspendu' };
-            }
-
-            // Simple password check (replace with real auth for production)
-            if (password && data.password !== password) {
-                return { success: false, error: 'Mot de passe incorrect' };
-            }
-
-            setCurrentUser({
-                id: data.id,
-                email: data.email,
-                name: data.name,
-                password: data.password,
-                role: data.role,
-                isActive: data.is_active,
-                customRate: data.custom_rate,
-                routes: data.routes || [],
-                admin_email: data.admin_email
+            // 1. Try to authenticate with Supabase Auth first
+            const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+                email: lowerEmail,
+                password: password || '',
             });
 
-            return { success: true };
+            if (!authError && authData.user) {
+                // Success with Supabase Auth - Clear any leftover manual session
+                localStorage.removeItem('transapp_manual_session');
+
+                // Fetch profile
+                const { data, error: profileError } = await supabase.from('accounts')
+                    .select('*')
+                    .eq('email', lowerEmail)
+                    .single();
+
+                if (profileError || !data) {
+                    return { success: false, error: 'Profil introuvable après authentification.' };
+                }
+
+                if (!data.is_active) {
+                    await supabase.auth.signOut();
+                    return { success: false, error: 'Compte suspendu' };
+                }
+
+                setCurrentUser({
+                    id: data.id,
+                    email: data.email,
+                    name: data.name,
+                    password: data.password,
+                    role: data.role,
+                    isActive: data.is_active,
+                    customRate: data.custom_rate,
+                    routes: data.routes || [],
+                    admin_email: data.admin_email
+                });
+
+                return { success: true };
+            }
+
+            // 2. Fallback: Check 'accounts' table directly (for partners created without Auth account)
+            console.log('Supabase Auth failed, checking accounts table fallback...');
+            const { data: dbUser, error: dbError } = await supabase.from('accounts')
+                .select('*')
+                .eq('email', lowerEmail)
+                .eq('password', password) // Direct matching for the "assigned" password
+                .single();
+
+            if (dbUser) {
+                if (!dbUser.is_active) {
+                    return { success: false, error: 'Compte suspendu' };
+                }
+
+                // SAVE manual session for persistence on refresh
+                localStorage.setItem('transapp_manual_session', JSON.stringify({ email: lowerEmail, password }));
+
+                setCurrentUser({
+                    id: dbUser.id,
+                    email: dbUser.email,
+                    name: dbUser.name,
+                    password: dbUser.password,
+                    role: dbUser.role,
+                    isActive: dbUser.is_active,
+                    customRate: dbUser.custom_rate,
+                    routes: dbUser.routes || [],
+                    admin_email: dbUser.admin_email
+                });
+                return { success: true };
+            }
+
+            return { success: false, error: authError?.message || 'Identifiants invalides.' };
         } catch (e) {
+            console.error('Login error:', e);
             return { success: false, error: 'Erreur de connexion' };
         } finally {
             setIsLoading(false);
         }
     };
 
-    const logout = () => {
+    const logout = async () => {
+        await supabase.auth.signOut();
         setCurrentUser(null);
         setTransactions([]);
         setAccounts([]);
@@ -343,11 +538,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             partner_email: t.partnerEmail,
             route: t.route,
             profit: t.profit,
+            pools_used: t.poolsUsed,
             is_profit_settled: false,
             admin_email: activeAdminScope
         }).select().single();
 
+        if (error) {
+            console.error('Error adding transaction:', error);
+            alert("Erreur lors de l'enregistrement de la transaction: " + error.message);
+            return null;
+        }
+
         if (data) {
+            // DEDUCT from pools in DB and local state
+            if (t.poolsUsed && t.poolsUsed.length > 0) {
+                for (const allocation of t.poolsUsed) {
+                    const pool = bulkTransfers.find(p => p.id === allocation.poolId);
+                    if (pool) {
+                        const newRemaining = (pool.remainingCNY || 0) - allocation.amountCNY;
+                        await supabase.from('bulk_transfers')
+                            .update({ remaining_cny: newRemaining })
+                            .eq('id', pool.id);
+
+                        setBulkTransfers(prev => prev.map(p => p.id === pool.id ? { ...p, remainingCNY: newRemaining } : p));
+                    }
+                }
+            }
+
             const newTx: Transaction = {
                 id: data.id,
                 name: data.name,
@@ -363,6 +580,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 partnerEmail: data.partner_email,
                 route: data.route,
                 profit: data.profit,
+                poolsUsed: data.pools_used,
                 isProfitSettled: data.is_profit_settled,
                 admin_email: data.admin_email
             };
@@ -377,25 +595,65 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setTransactions(prev => prev.map(t => t.id === id ? { ...t, status } : t));
     };
 
-    const addClientRecord = (r: Omit<ClientRecord, 'id' | 'date' | 'status' | 'admin_email'>) => {
+    const addClientRecord = async (r: Omit<ClientRecord, 'id' | 'date' | 'status' | 'admin_email'>) => {
         if (!activeAdminScope) return;
-        setClientRecords(prev => [{ ...r, id: Date.now().toString(), date: new Date().toISOString(), status: 'active', admin_email: activeAdminScope }, ...prev]);
+        const { data, error } = await supabase.from('client_records').insert({
+            client_name: r.clientName,
+            amount: r.amount,
+            type: r.type,
+            partner_email: r.partnerEmail,
+            status: 'active',
+            admin_email: activeAdminScope
+        }).select().single();
+
+        if (error) {
+            console.error('Error adding client record:', error);
+            return;
+        }
+
+        if (data) {
+            setClientRecords(prev => [{
+                id: data.id,
+                clientName: data.client_name,
+                amount: data.amount,
+                type: data.type,
+                partnerEmail: data.partner_email,
+                date: data.date,
+                status: data.status,
+                admin_email: data.admin_email
+            }, ...prev]);
+        }
     };
 
-    const resolveClientRecord = (id: string) => {
-        setClientRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'resolved' } : r));
+    const resolveClientRecord = async (id: string) => {
+        const { error } = await supabase.from('client_records').update({ status: 'resolved' }).eq('id', id);
+        if (!error) {
+            setClientRecords(prev => prev.map(r => r.id === id ? { ...r, status: 'resolved' } : r));
+        }
     };
 
     const addBulkTransfer = async (amountCFA: number, partnerEmail: string) => {
-        if (!activeAdminScope) return;
+        if (!activeAdminScope) {
+            console.error('AddBulkTransfer failed: No activeAdminScope');
+            return;
+        }
         const ref = `DEP-${new Date().toISOString().replace(/\D/g, '').slice(0, 8)}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
-        const { data } = await supabase.from('bulk_transfers').insert({
+
+        console.log('Inserting bulk transfer for:', partnerEmail, 'with scope:', activeAdminScope);
+
+        const { data, error } = await supabase.from('bulk_transfers').insert({
             partner_email: partnerEmail,
             amount_cfa: amountCFA,
             status: 'En attente',
             ref: ref,
             admin_email: activeAdminScope
         }).select().single();
+
+        if (error) {
+            console.error('Error inserting bulk transfer:', error.message, error.details);
+            alert("Erreur lors de l'enregistrement du dépôt. " + error.message);
+            return;
+        }
 
         if (data) {
             setBulkTransfers(prev => [{
@@ -446,15 +704,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }));
     };
 
-    const partnerReserve = 0;
+    const receiptSettingsValue = receiptSettings; // to avoid naming conflict
 
     return (
         <AppContext.Provider value={{
             transactions, clientRecords, bulkTransfers, accounts, globalRate, setGlobalRate,
             addAccount, updateAccount, addTransaction, updateTransactionStatus,
             addClientRecord, resolveClientRecord, addBulkTransfer, deleteBulkTransfer,
-            confirmBulkTransfer, partnerReserve, routeRates, updateRouteRate,
-            deleteRouteRate, settleProfits, receiptSettings, setReceiptSettings, isLoading,
+            confirmBulkTransfer, partnerReserve, encaissement, routeRates, updateRouteRate,
+            deleteRouteRate, settleProfits, receiptSettings: receiptSettingsValue, setReceiptSettings, isLoading,
             currentUser, login, logout
         }}>
             {children}

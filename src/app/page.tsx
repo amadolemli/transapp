@@ -12,16 +12,72 @@ import {
 } from 'lucide-react';
 import { useAppContext, TransferRoute } from './AppContext';
 import { supabase } from './supabase';
-import { handleShareReceipt } from './utils';
+import { handleShareReceipt, generateReceipt } from './utils';
 import { format } from 'date-fns';
 
 type Role = 'admin' | 'partner';
-type Screen = 'login' | 'app';
+type Screen = 'login' | 'app' | 'confirm-email';
 type Tab = 'home' | 'history' | 'add' | 'gestion' | 'profile' | 'overview' | 'operations' | 'partners' | 'deposits';
 
 
 // ─── UTILS ────────────────────────────────────────────────────────────────
 const formatMoney = (amount: number) => Math.round(amount).toLocaleString('fr-FR');
+
+function ReceiptPreviewModal({ tx, type, onClose }: { tx: any, type: 'client' | 'china', onClose: () => void }) {
+  const { receiptSettings } = useAppContext();
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadPdf = async () => {
+      try {
+        const blob = await generateReceipt(tx, type, receiptSettings);
+        const url = URL.createObjectURL(blob);
+        setPdfUrl(url);
+      } catch (e) {
+        console.error("PDF Preview generation error", e);
+      }
+    };
+    loadPdf();
+    return () => {
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+    };
+  }, [tx, type, receiptSettings]);
+
+  if (!tx) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white w-full max-w-lg rounded-[32px] overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="p-5 border-b flex justify-between items-center bg-gray-50/50">
+          <div>
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">APERÇU DU REÇU</p>
+            <h3 className="font-bold text-primary">{type === 'client' ? 'Format Client' : 'Format Chine'}</h3>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors"><XCircle className="w-6 h-6 text-gray-400" /></button>
+        </div>
+        <div className="flex-1 bg-gray-50 p-3 overflow-hidden flex justify-center items-center">
+          {pdfUrl ? (
+            <iframe src={pdfUrl} className="w-full h-full rounded-2xl border shadow-inner bg-white" title="Receipt Preview" />
+          ) : (
+            <div className="animate-pulse flex flex-col items-center">
+              <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-2" />
+              <p className="text-xs text-gray-500 font-medium">Génération en cours...</p>
+            </div>
+          )}
+        </div>
+        <div className="p-5 bg-white border-t flex flex-col gap-3">
+          <button
+            onClick={() => { handleShareReceipt(tx, type, receiptSettings); onClose(); }}
+            className="w-full py-4 bg-primary text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-primary/20 active:scale-[0.98] transition-transform"
+          >
+            <Send className="w-5 h-5" /> Partager (WhatsApp)
+          </button>
+          <p className="text-[10px] text-center text-gray-400 font-medium italic">Cliquez sur Partager pour envoyer le PDF au client.</p>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
 
 // ─── HOME / DASHBOARD ────────────────────────────────────────────────────────
 function HomeScreen({ userName, userEmail }: { userName: string, userEmail: string }) {
@@ -202,6 +258,7 @@ function HomeScreen({ userName, userEmail }: { userName: string, userEmail: stri
 function HistoryScreen({ userEmail }: { userEmail: string }) {
   const [filter, setFilter] = useState<'all' | 'paid' | 'pending'>('all');
   const { transactions, receiptSettings } = useAppContext();
+  const [previewTx, setPreviewTx] = useState<{ tx: any, type: 'client' | 'china' } | null>(null);
 
   const partnerTxs = transactions.filter(t => t.partnerEmail === userEmail);
   const filtered = filter === 'all' ? partnerTxs : filter === 'paid' ? partnerTxs.filter(t => t.status === 'Payé') : partnerTxs.filter(t => t.status === 'Confirmé' || t.status === 'Validé');
@@ -264,14 +321,35 @@ function HistoryScreen({ userEmail }: { userEmail: string }) {
               <span className="text-[10px] text-gray-400">Taux: {item.rate}</span>
             </div>
             <div className="mt-3 flex gap-2">
-              <button onClick={() => handleShareReceipt(item, 'client', receiptSettings)} className="flex-1 py-2 bg-gray-50 text-gray-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1 border border-gray-100">
-                <FileText className="w-3 h-3" /> Reçu Client
+              <button
+                onClick={() => setPreviewTx({ tx: item, type: 'client' })}
+                className="flex-1 py-2 bg-gray-50 text-gray-600 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 border border-gray-100"
+              >
+                <FileText className="w-3 h-3" /> Reçu Envoi
               </button>
+              {['Payé', 'Envoyé'].includes(item.status) && (
+                <button
+                  onClick={() => setPreviewTx({ tx: item, type: 'china' })}
+                  className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 border border-blue-100"
+                >
+                  <FileText className="w-3 h-3" /> Reçu Retrait
+                </button>
+              )}
             </div>
           </motion.div>
         ))}
         {filtered.length === 0 && <p className="text-sm text-center text-gray-400">Aucun transfert pour ce filtre.</p>}
       </div>
+
+      <AnimatePresence>
+        {previewTx && (
+          <ReceiptPreviewModal
+            tx={previewTx.tx}
+            type={previewTx.type}
+            onClose={() => setPreviewTx(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -280,9 +358,10 @@ function HistoryScreen({ userEmail }: { userEmail: string }) {
 function NewTransferScreen({ userEmail }: { userEmail: string }) {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({ route: '' as any, clientName: '', clientPhone: '', amount: '', receiverName: '', receiverAccount: '', customRate: '', paymentStatus: 'Validé' as any });
-  const { globalRate, addTransaction, bulkTransfers, accounts, routeRates, receiptSettings } = useAppContext();
+  const { globalRate, addTransaction, bulkTransfers, accounts, routeRates, receiptSettings, addClientRecord } = useAppContext();
   const [createdTx, setCreatedTx] = useState<any>(null);
   const [selectedPools, setSelectedPools] = useState<string[]>([]);
+  const [previewTx, setPreviewTx] = useState<{ tx: any, type: 'client' | 'china' } | null>(null);
 
   const currentAccount = accounts.find(a => a.email === userEmail);
   const selectedRoute = (formData.route || (currentAccount?.routes[0] || 'Sénégal -> Chine')) as TransferRoute;
@@ -295,10 +374,15 @@ function NewTransferScreen({ userEmail }: { userEmail: string }) {
   const allocations: { poolId: string, amountCNY: number, poolRate: number }[] = [];
 
   if (selectedPools.length > 0) {
-    const pool = availablePools.find(p => p.id === selectedPools[0]);
-    if (pool) {
-      allocations.push({ poolId: pool.id, amountCNY: neededCNY, poolRate: pool.rate! });
-      totalCostCFA = neededCNY * pool.rate!;
+    if (selectedPools[0] === 'virtual') {
+      // Virtual pool uses the base rate, results in 0 partner profit if sold at base rate
+      totalCostCFA = neededCNY * partnerGlobalRate;
+    } else {
+      const pool = availablePools.find(p => p.id === selectedPools[0]);
+      if (pool) {
+        allocations.push({ poolId: pool.id, amountCNY: neededCNY, poolRate: pool.rate! });
+        totalCostCFA = neededCNY * pool.rate!;
+      }
     }
   }
 
@@ -310,10 +394,11 @@ function NewTransferScreen({ userEmail }: { userEmail: string }) {
   };
 
   const handleConfirm = async () => {
+    const amount = parseFloat(formData.amount.replace(/,/g, ''));
     const tx = await addTransaction({
       name: formData.clientName,
       phone: formData.clientPhone,
-      amount: parseFloat(formData.amount.replace(/,/g, '')),
+      amount: amount,
       rate: formData.customRate ? parseFloat(formData.customRate) : partnerGlobalRate,
       receiverName: formData.receiverName,
       receiverAccount: formData.receiverAccount,
@@ -323,6 +408,16 @@ function NewTransferScreen({ userEmail }: { userEmail: string }) {
       poolsUsed: allocations,
       profit: expectedProfit
     });
+
+    if (tx && formData.paymentStatus === 'Confirmé') {
+      await addClientRecord({
+        clientName: formData.clientName,
+        amount: amount,
+        type: 'dette',
+        partnerEmail: userEmail
+      });
+    }
+
     setCreatedTx(tx);
     setStep(3);
   };
@@ -429,11 +524,20 @@ function NewTransferScreen({ userEmail }: { userEmail: string }) {
                       <input type="radio" checked={selectedPools.includes(pool.id)} onChange={() => handleTogglePool(pool.id)} className="w-4 h-4 rounded text-primary accent-primary" />
                       <div className="flex-1">
                         <div className="text-sm font-bold text-primary">Reste: {formatMoney(pool.remainingCNY || 0)} CNY</div>
-                        <div className="text-[10px] text-gray-500 font-medium">Taux d'achat: {pool.rate?.toFixed(2)} FCFA/CNY</div>
+                        <div className="text-[10px] text-gray-400 font-medium">Taux d'achat: {pool.rate?.toFixed(2)} FCFA</div>
                       </div>
                     </label>
                   ))}
-                  {availablePools.length === 0 && <p className="text-xs text-gray-400">Aucun dépôt disponible. Veuillez faire un dépôt admin d'abord.</p>}
+
+                  {/* Virtual Pool / Overdraft Option */}
+                  <label className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer ${selectedPools.includes('virtual') ? 'bg-orange-50 border-orange-500 shadow-sm' : 'bg-white border-gray-100'}`}>
+                    <input type="radio" checked={selectedPools.includes('virtual')} onChange={() => handleTogglePool('virtual')} className="w-4 h-4 rounded text-orange-500 accent-orange-500" />
+                    <div className="flex-1">
+                      <div className="text-sm font-bold text-orange-600 italic">Dépôt Virtuel (Découvert / Dette)</div>
+                      <div className="text-[10px] text-gray-400 font-medium italic">Utiliser le capital Admin (Taux: {partnerGlobalRate})</div>
+                    </div>
+                    <AlertTriangle className="w-4 h-4 text-orange-500 opacity-50" />
+                  </label>
                 </div>
               </div>
 
@@ -496,10 +600,10 @@ function NewTransferScreen({ userEmail }: { userEmail: string }) {
                 </div>
               </div>
               <div className="mt-4 flex gap-2">
-                <button onClick={() => handleShareReceipt(createdTx, 'client', receiptSettings)} className="flex-1 py-3 bg-primary/10 text-primary rounded-xl font-bold text-sm flex items-center justify-center gap-2">
+                <button onClick={() => setPreviewTx({ tx: createdTx, type: 'client' })} className="flex-1 py-3 bg-primary/10 text-primary rounded-xl font-bold text-sm flex items-center justify-center gap-2">
                   <FileText className="w-4 h-4" /> Reçu Client
                 </button>
-                <button onClick={() => handleShareReceipt(createdTx, 'china', receiptSettings)} className="flex-1 py-3 bg-primary/10 text-primary rounded-xl font-bold text-sm flex items-center justify-center gap-2">
+                <button onClick={() => setPreviewTx({ tx: createdTx, type: 'china' })} className="flex-1 py-3 bg-primary/10 text-primary rounded-xl font-bold text-sm flex items-center justify-center gap-2">
                   <FileText className="w-4 h-4" /> Reçu Chine
                 </button>
               </div>
@@ -511,7 +615,17 @@ function NewTransferScreen({ userEmail }: { userEmail: string }) {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+
+      <AnimatePresence>
+        {previewTx && (
+          <ReceiptPreviewModal
+            tx={previewTx.tx}
+            type={previewTx.type}
+            onClose={() => setPreviewTx(null)}
+          />
+        )}
+      </AnimatePresence>
+    </div >
   );
 }
 
@@ -612,7 +726,7 @@ function PartnerGestionScreen({ userEmail }: { userEmail: string }) {
 }
 // ─── PROFILE ──────────────────────────────────────────────────────────────────
 function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name: string, email: string, role: Role } }) {
-  const { transactions, partnerReserve, accounts, settleProfits, receiptSettings, setReceiptSettings, routeRates, updateRouteRate, deleteRouteRate } = useAppContext();
+  const { transactions, partnerReserve, encaissement, accounts, settleProfits, receiptSettings, setReceiptSettings, routeRates, updateRouteRate, deleteRouteRate } = useAppContext();
   const [viewingReceipts, setViewingReceipts] = useState(false);
   const [viewingRoutes, setViewingRoutes] = useState(false);
   const [editingRoute, setEditingRoute] = useState<string | null>(null);
@@ -663,8 +777,6 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
   const myPendingProfitShare = pendingProfitRaw / 2;
   const otherPendingProfitShare = pendingProfitRaw / 2;
 
-  // Cash on hand (Funds currently with partner to be sent to admin)
-  const cashOnHand = partnerTxs.filter(t => t.status === 'Validé' || t.status === 'Payé').reduce((acc, t) => acc + t.amount, 0);
 
   // Admin specific stats
   const totalNetworkProfitPending = allTxs.filter(t => (t.status === 'Payé' || t.status === 'Envoyé') && !t.isProfitSettled).reduce((acc, t) => acc + (t.profit || 0), 0);
@@ -904,12 +1016,13 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
             {user.role === 'partner' ? (
               <>
                 <div className="flex justify-between items-end border-b border-gray-200 pb-2">
-                  <span className="text-xs text-gray-500 font-medium italic">Réserve CNY Actuelle :</span>
-                  <span className="text-sm font-black text-primary">{formatMoney(partnerReserve)} FCFA</span>
-                </div>
-                <div className="flex justify-between items-end border-b border-gray-200 pb-2">
-                  <span className="text-xs text-gray-500 font-medium italic">Cash en main (Dettes Admin) :</span>
-                  <span className="text-sm font-black text-orange-600">{formatMoney(cashOnHand)} FCFA</span>
+                  <span className="text-xs text-gray-500 font-medium italic">Encaissement (Balance CFA) :</span>
+                  <span className={`text-sm font-black ${encaissement >= 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                    {formatMoney(encaissement)} FCFA
+                    <span className="text-[8px] block opacity-50 uppercase tracking-tighter">
+                      {encaissement >= 0 ? "Le partenaire doit à l'admin" : "L'admin doit au partenaire"}
+                    </span>
+                  </span>
                 </div>
               </>
             ) : (
@@ -919,8 +1032,8 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
                   <span className="text-sm font-black text-primary">{accounts.filter(a => a.role === 'partner').length}</span>
                 </div>
                 <div className="flex justify-between items-end border-b border-gray-200 pb-2">
-                  <span className="text-xs text-gray-500 font-medium italic">Total Dettes Partenaires (Cash) :</span>
-                  <span className="text-sm font-black text-orange-600">{formatMoney(allTxs.filter(t => t.status === 'Validé' || t.status === 'Payé').reduce((acc, t) => acc + t.amount, 0))} FCFA</span>
+                  <span className="text-xs text-gray-500 font-medium italic">Encaissement Réseau (Cash) :</span>
+                  <span className="text-sm font-black text-orange-600">{formatMoney(encaissement)} FCFA</span>
                 </div>
               </>
             )}
@@ -963,7 +1076,7 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
 // ─── ADMIN SCREENS ────────────────────────────────────────────────────────────
 
 function AdminOverviewScreen() {
-  const { transactions, routeRates, updateRouteRate, deleteRouteRate } = useAppContext();
+  const { transactions, routeRates, updateRouteRate, deleteRouteRate, partnerReserve, encaissement } = useAppContext();
   const [editingRoute, setEditingRoute] = useState<string | null>(null);
   const [newRate, setNewRate] = useState("");
   const [showAddRoute, setShowAddRoute] = useState(false);
@@ -1005,7 +1118,7 @@ function AdminOverviewScreen() {
             <Wallet className="w-4 h-4" />
             <span className="text-[10px] font-bold uppercase tracking-wider">Réserve Globale</span>
           </div>
-          <div className="text-xl font-bold tracking-tight">45.5M <span className="text-xs font-normal">FCFA</span></div>
+          <div className="text-xl font-bold tracking-tight">{formatMoney(partnerReserve)} <span className="text-xs font-normal">FCFA</span></div>
         </motion.div>
 
         <motion.div whileHover={{ y: -3 }} className="ios-card bg-white border border-gray-100 shadow-sm">
@@ -1018,14 +1131,23 @@ function AdminOverviewScreen() {
         </motion.div>
       </div>
 
-      <motion.div whileHover={{ y: -3 }} className="ios-card bg-green-50 border border-green-100 shadow-sm">
-        <div className="flex items-center gap-2 mb-2 text-green-700">
-          <TrendingUp className="w-4 h-4" />
-          <span className="text-[10px] font-bold uppercase tracking-wider">Profit Net En Attente</span>
-        </div>
-        <div className="text-2xl font-black tracking-tight text-green-600">{formatMoney(pendingProfit)} <span className="text-xs font-normal">FCFA</span></div>
-        <div className="mt-1 text-sm text-green-800 font-medium">Ma Part Admin (50%): <strong className="text-green-700">{formatMoney(adminProfitShare)} FCFA</strong></div>
-      </motion.div>
+      <div className="grid grid-cols-2 gap-4">
+        <motion.div whileHover={{ y: -3 }} className="ios-card bg-green-50 border border-green-100 shadow-sm">
+          <div className="flex items-center gap-2 mb-2 text-green-700">
+            <TrendingUp className="w-4 h-4" />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Profit En Attente</span>
+          </div>
+          <div className="text-lg font-black tracking-tight text-green-600">{formatMoney(pendingProfit)} <span className="text-xs font-normal">FCFA</span></div>
+        </motion.div>
+
+        <motion.div whileHover={{ y: -3 }} className="ios-card bg-orange-50 border border-orange-100 shadow-sm">
+          <div className="flex items-center gap-2 mb-2 text-orange-700">
+            <TrendingUp className="w-4 h-4" />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Cash Réseau</span>
+          </div>
+          <div className="text-lg font-black tracking-tight text-orange-600">{formatMoney(encaissement)} <span className="text-xs font-normal">FCFA</span></div>
+        </motion.div>
+      </div>
 
       {/* Taux de Change Control */}
       <div className="ios-card bg-white space-y-3 border border-gray-100">
@@ -1193,6 +1315,7 @@ function AdminDepositsScreen() {
 
 function AdminOperationsScreen() {
   const { transactions, updateTransactionStatus } = useAppContext();
+  const [previewTx, setPreviewTx] = useState<{ tx: any, type: 'client' | 'china' } | null>(null);
 
   const pending = transactions.filter(t => ['Confirmé', 'Validé', 'Payé'].includes(t.status));
   const completed = transactions.filter(t => ['Envoyé', 'Annulé'].includes(t.status)).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -1229,16 +1352,19 @@ function AdminOperationsScreen() {
                 <span>{(item.amount / item.rate).toFixed(2)} ¥</span>
               </div>
               <div className="flex gap-2 pt-2 border-t border-gray-50">
-                <button onClick={async () => await updateTransactionStatus(item.id, 'Annulé')} className="flex-1 py-3 bg-red-50 text-red-600 rounded-xl text-xs font-bold flex items-center justify-center gap-1">
+                <button onClick={async () => await updateTransactionStatus(item.id, 'Annulé')} className="flex-1 py-3 bg-red-50 text-red-600 rounded-xl text-[10px] font-bold flex items-center justify-center gap-1">
                   <XCircle className="w-4 h-4" /> Rejeter
                 </button>
+                <button onClick={() => setPreviewTx({ tx: item, type: 'china' })} className="flex-1 py-3 bg-blue-50 text-blue-600 rounded-xl text-[10px] font-bold flex items-center justify-center gap-1 border border-blue-100">
+                  <FileText className="w-4 h-4" /> Reçu Retrait
+                </button>
                 {item.status !== 'Payé' ? (
-                  <button onClick={async () => await updateTransactionStatus(item.id, 'Payé')} className="flex-1 py-3 bg-green-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1 shadow-md">
-                    <CheckCircle className="w-4 h-4" /> Valider Pmt.
+                  <button onClick={async () => await updateTransactionStatus(item.id, 'Payé')} className="flex-1 py-3 bg-green-500 text-white rounded-xl text-[10px] font-bold flex items-center justify-center gap-1 shadow-md">
+                    <CheckCircle className="w-4 h-4" /> Payer
                   </button>
                 ) : (
-                  <button onClick={async () => await updateTransactionStatus(item.id, 'Envoyé')} className="flex-1 py-3 bg-black text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1 shadow-md">
-                    <Send className="w-4 h-4" /> Payer en Chine
+                  <button onClick={async () => await updateTransactionStatus(item.id, 'Envoyé')} className="flex-1 py-3 bg-black text-white rounded-xl text-[10px] font-bold flex items-center justify-center gap-1 shadow-md">
+                    <Send className="w-4 h-4" /> Terminer
                   </button>
                 )}
               </div>
@@ -1276,18 +1402,37 @@ function AdminOperationsScreen() {
                 <span className="text-gray-400 uppercase">Validé par</span>
                 <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{item.partnerEmail}</span>
               </div>
+              <div className="flex gap-2 pt-2 border-t border-gray-50">
+                <button onClick={() => setPreviewTx({ tx: item, type: 'client' })} className="flex-1 py-1.5 bg-gray-50 text-gray-500 rounded-lg text-[9px] font-bold flex items-center justify-center gap-1">
+                  <FileText className="w-3 h-3" /> Reçu Envoi
+                </button>
+                <button onClick={() => setPreviewTx({ tx: item, type: 'china' })} className="flex-1 py-1.5 bg-blue-50 text-blue-500 rounded-lg text-[9px] font-bold flex items-center justify-center gap-1">
+                  <FileText className="w-3 h-3" /> Reçu Retrait
+                </button>
+              </div>
             </motion.div>
           ))}
           {completed.length === 0 && <p className="text-sm text-center text-gray-400">Aucun historique.</p>}
         </div>
       </div>
+
+      <AnimatePresence>
+        {previewTx && (
+          <ReceiptPreviewModal
+            tx={previewTx.tx}
+            type={previewTx.type}
+            onClose={() => setPreviewTx(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 function AdminPartnersScreen() {
-  const { accounts, addAccount, updateAccount, routeRates } = useAppContext();
+  const { accounts, addAccount, updateAccount, routeRates, clientRecords } = useAppContext();
   const [showAdd, setShowAdd] = useState(false);
+  const [expandedPartner, setExpandedPartner] = useState<string | null>(null);
   const [newPartner, setNewPartner] = useState({ name: '', email: '', password: '', routes: [] as string[] });
 
   const partners = accounts.filter(a => a.role === 'partner');
@@ -1365,13 +1510,38 @@ function AdminPartnersScreen() {
                   <div className="text-[10px] text-gray-400">{p.email}</div>
                 </div>
               </div>
-              <button
-                onClick={async () => await updateAccount(p.id, { isActive: !p.isActive })}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${p.isActive ? 'bg-red-50 hover:bg-red-100 text-red-600' : 'bg-green-50 hover:bg-green-100 text-green-600'}`}
-              >
-                {p.isActive ? <><XCircle className="w-3 h-3" /> Suspendre</> : <><CheckCircle className="w-3 h-3" /> Activer</>}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setExpandedPartner(expandedPartner === p.id ? null : p.id)}
+                  className={`p-2 rounded-lg transition-colors ${expandedPartner === p.id ? 'bg-primary/10 text-primary' : 'bg-gray-50 text-gray-400'}`}
+                >
+                  <Lock className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={async () => await updateAccount(p.id, { isActive: !p.isActive })}
+                  className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${p.isActive ? 'bg-red-50 hover:bg-red-100 text-red-600' : 'bg-green-50 hover:bg-green-100 text-green-600'}`}
+                >
+                  {p.isActive ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
+
+            <AnimatePresence>
+              {expandedPartner === p.id && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="bg-blue-50/50 rounded-xl p-3 border border-blue-100 space-y-2 overflow-hidden">
+                  <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Identifiants de connexion</p>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-500">Email:</span>
+                    <span className="font-bold text-primary font-mono">{p.email}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-500">Mot de passe:</span>
+                    <span className="font-bold text-primary font-mono">{p.password}</span>
+                  </div>
+                  <p className="text-[9px] text-blue-500 italic mt-1">Le partenaire peut se connecter directement avec ces accès.</p>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <div className="pt-2 border-t border-gray-50">
               <span className="text-[10px] font-bold text-gray-400 uppercase block mb-2">Routes Assignées ({p.routes?.length || 0})</span>
@@ -1388,6 +1558,18 @@ function AdminPartnersScreen() {
                     </button>
                   )
                 })}
+              </div>
+            </div>
+
+            {/* Avoirs & Dettes Summary for Admin */}
+            <div className="pt-2 border-t border-gray-50 flex gap-2">
+              <div className="flex-1 bg-green-50/50 p-2 rounded-lg">
+                <span className="text-[9px] font-bold text-green-600 uppercase block">Avoirs (Dépôts)</span>
+                <span className="text-xs font-black text-green-700">{formatMoney(clientRecords.filter(r => r.partnerEmail === p.email && r.type === 'avoir' && r.status === 'active').reduce((acc, r) => acc + r.amount, 0))} FCFA</span>
+              </div>
+              <div className="flex-1 bg-yellow-50/50 p-2 rounded-lg">
+                <span className="text-[9px] font-bold text-yellow-600 uppercase block">Dettes Clients</span>
+                <span className="text-xs font-black text-yellow-700">{formatMoney(clientRecords.filter(r => r.partnerEmail === p.email && r.type === 'dette' && r.status === 'active').reduce((acc, r) => acc + r.amount, 0))} FCFA</span>
               </div>
             </div>
           </div>
@@ -1452,6 +1634,7 @@ function BottomNav({ role, activeTab, onChange }: { role: Role; activeTab: Tab; 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const { accounts, login, logout, currentUser, isLoading: isDataLoading } = useAppContext();
+  const [mounted, setMounted] = useState(false);
   const [screen, setScreen] = useState<Screen>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -1463,21 +1646,30 @@ export default function App() {
   const [userEmail, setUserEmail] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
 
-  if (isDataLoading) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F2F2F7]">
-        <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
-        <p className="text-gray-500 font-medium animate-pulse">Initialisation sécurisée...</p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Redirect to login screen if currentUser is null but we are on 'app' screen
   useEffect(() => {
-    if (!currentUser && screen === 'app') {
+    if (mounted && !currentUser && screen === 'app') {
       setScreen('login');
     }
-  }, [currentUser, screen]);
+    // Auto-redirect to app if already logged in (e.g. session restoration)
+    if (mounted && currentUser && screen === 'login') {
+      setScreen('app');
+    }
+  }, [currentUser, screen, mounted]);
+
+  // MOUNT/LOADING CHECK (Must be below all hooks)
+  if (!mounted || isDataLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F2F2F7]">
+        <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4" />
+        <p className="text-gray-500 font-medium animate-pulse">Chargement de TransApp...</p>
+      </div>
+    );
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1485,29 +1677,36 @@ export default function App() {
     setIsLoading(true);
 
     if (isRegistering) {
-      // Logic for new Admin registration
+      // Logic for new Admin registration via Supabase Auth
       try {
-        const { data: existing } = await supabase.from('accounts').select('id').eq('email', email.toLowerCase()).single();
-        if (existing) {
-          setError('Cet email est déjà utilisé.');
+        // 1. Sign up with Supabase Auth (Trigger handles profile creation)
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email: email.toLowerCase(),
+          password: password,
+          options: {
+            data: {
+              name: userName || 'Admin',
+            }
+          }
+        });
+
+        if (authError) {
+          setError(authError.message);
           setIsLoading(false);
           return;
         }
 
-        const { error: regError } = await supabase.from('accounts').insert({
-          email: email.toLowerCase(),
-          name: userName || 'Admin',
-          password: password,
-          role: 'admin',
-          is_active: true,
-          routes: []
-        });
-
-        if (regError) throw regError;
-
-        // Auto login after registration
-        await login(email, password);
-        setScreen('app');
+        if (authData.user) {
+          // Check if email confirmation is required
+          if (authData.session) {
+            // Already logged in (confirmation disabled in Supabase)
+            await login(email, password);
+            setScreen('app');
+          } else {
+            // Confirmation required - SHOW NEW SCREEN
+            setScreen('confirm-email');
+          }
+        }
       } catch (err) {
         setError('Erreur lors de la création du compte.');
       }
@@ -1521,6 +1720,38 @@ export default function App() {
     }
     setIsLoading(false);
   };
+
+  if (screen === 'confirm-email') {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F2F2F7] p-6 text-center">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full"
+        >
+          <div className="w-20 h-20 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Mail className="w-10 h-10 text-primary" />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Vérifiez vos emails !</h2>
+          <p className="text-gray-600 mb-8">
+            Un lien de confirmation a été envoyé à <span className="font-bold text-gray-900">{email}</span>.
+            Veuillez cliquer sur ce lien pour activer votre compte administrateur TransApp.
+          </p>
+          <div className="space-y-4">
+            <button
+              onClick={() => { setScreen('login'); setIsRegistering(false); }}
+              className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20 flex items-center justify-center gap-2"
+            >
+              Retour à la connexion <ArrowRight className="w-5 h-5" />
+            </button>
+            <p className="text-xs text-gray-400">
+              Vous n'avez rien reçu ? Vérifiez vos spams ou réessayez l'inscription.
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   if (screen === 'app' && currentUser) {
     return (

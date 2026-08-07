@@ -92,6 +92,8 @@ interface AppContextType {
     settleProfits: (partnerEmail?: string) => Promise<void>;
     receiptSettings: { style: number, headerImage: string | null };
     setReceiptSettings: (settings: { style: number, headerImage: string | null }) => Promise<void>;
+    updatePassword: (newPassword: string) => Promise<{ success: boolean, error?: string }>;
+    updateProfile: (updates: { name?: string }) => Promise<void>;
     isLoading: boolean;
     currentUser: Account | null;
     login: (email: string, password?: string) => Promise<{ success: boolean, error?: string }>;
@@ -137,11 +139,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let deposited = 0;
 
         if (currentUser.role === 'admin') {
-            received = transactions.reduce((acc, t) => acc + t.amount, 0);
+            received = transactions.filter(t => t.status !== 'Annulé').reduce((acc, t) => acc + t.amount, 0);
             deposited = bulkTransfers.filter(b => b.status !== 'Rejeté').reduce((acc, b) => acc + b.amountCFA, 0);
         } else {
             const targetEmail = currentUser.email;
-            received = transactions.filter(t => t.partnerEmail === targetEmail).reduce((acc, t) => acc + t.amount, 0);
+            received = transactions.filter(t => t.partnerEmail === targetEmail && t.status !== 'Annulé').reduce((acc, t) => acc + t.amount, 0);
             deposited = bulkTransfers.filter(b => b.partnerEmail === targetEmail && b.status !== 'Rejeté').reduce((acc, b) => acc + b.amountCFA, 0);
         }
 
@@ -471,12 +473,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setRouteRates(newRates);
         await supabase.from('settings').upsert({ key: 'route_rates', value: newRates, admin_email: activeAdminScope });
 
-        // Also remove from accounts locally and in DB
+        // Remove from accounts locally
         setAccounts(prev => prev.map(a => ({
             ...a,
             routes: a.routes.filter(r => r !== route)
         })));
-        // Note: Real DB update for all accounts would need a specific query or loop
+
+        // Batch update all accounts in DB: remove the deleted route from their routes array
+        const affectedAccounts = accounts.filter(a => a.routes.includes(route));
+        for (const acc of affectedAccounts) {
+            const updatedRoutes = acc.routes.filter(r => r !== route);
+            await supabase.from('accounts').update({ routes: updatedRoutes }).eq('id', acc.id);
+        }
     };
 
     const addAccount = async (acc: Omit<Account, 'id'>) => {
@@ -704,6 +712,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }));
     };
 
+    const updatePassword = async (newPassword: string): Promise<{ success: boolean, error?: string }> => {
+        if (!currentUser) return { success: false, error: 'Non connecté' };
+        try {
+            // Update password in accounts table
+            const { error: dbError } = await supabase.from('accounts')
+                .update({ password: newPassword })
+                .eq('id', currentUser.id);
+            if (dbError) return { success: false, error: dbError.message };
+
+            // Try to update Supabase Auth password (only works if logged in via Auth)
+            try {
+                await supabase.auth.updateUser({ password: newPassword });
+            } catch {
+                // Ignore — user may be logged in via manual session fallback
+            }
+
+            // Update local session if using manual session
+            const manualSession = localStorage.getItem('transapp_manual_session');
+            if (manualSession) {
+                const parsed = JSON.parse(manualSession);
+                parsed.password = newPassword;
+                localStorage.setItem('transapp_manual_session', JSON.stringify(parsed));
+            }
+
+            setCurrentUser(prev => prev ? { ...prev, password: newPassword } : null);
+            return { success: true };
+        } catch (e) {
+            return { success: false, error: 'Erreur lors de la mise à jour' };
+        }
+    };
+
+    const updateProfile = async (updates: { name?: string }) => {
+        if (!currentUser) return;
+        if (updates.name) {
+            await supabase.from('accounts').update({ name: updates.name }).eq('id', currentUser.id);
+            setCurrentUser(prev => prev ? { ...prev, name: updates.name! } : null);
+        }
+    };
+
     const receiptSettingsValue = receiptSettings; // to avoid naming conflict
 
     return (
@@ -712,7 +759,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             addAccount, updateAccount, addTransaction, updateTransactionStatus,
             addClientRecord, resolveClientRecord, addBulkTransfer, deleteBulkTransfer,
             confirmBulkTransfer, partnerReserve, encaissement, routeRates, updateRouteRate,
-            deleteRouteRate, settleProfits, receiptSettings: receiptSettingsValue, setReceiptSettings, isLoading,
+            deleteRouteRate, settleProfits, receiptSettings: receiptSettingsValue, setReceiptSettings,
+            updatePassword, updateProfile, isLoading,
             currentUser, login, logout
         }}>
             {children}

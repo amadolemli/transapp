@@ -5,16 +5,17 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Lock, Mail, ArrowRight, ShieldCheck, Globe,
   TrendingUp, Wallet, ArrowUpRight, Clock, ChevronRight,
-  Home, History, PlusCircle, User, Search, Filter,
+  Home, History, PlusCircle, User, Search,
   Phone, MapPin, Calendar, CheckCircle, XCircle, Send, Camera,
-  LogOut, Edit3, Star, Copy, Bell, HelpCircle, ChevronDown, FileText,
+  LogOut, Edit3, Star, Copy, ChevronDown, FileText,
   PieChart, Activity, AlertCircle, Users, BookOpen, Landmark, Trash2,
-  AlertTriangle
+  AlertTriangle, Eye, EyeOff
 } from 'lucide-react';
 import { useAppContext, TransferRoute } from './AppContext';
 import { supabase } from './supabase';
 import { handleShareReceipt, generateReceipt } from './utils';
 import { format } from 'date-fns';
+import BottomNav from '@/components/layout/BottomNav';
 
 type Role = 'admin' | 'partner';
 type Screen = 'login' | 'app' | 'confirm-email';
@@ -258,31 +259,39 @@ function HomeScreen({ userName, userEmail }: { userName: string, userEmail: stri
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
 function HistoryScreen({ userEmail }: { userEmail: string }) {
   const [filter, setFilter] = useState<'all' | 'paid' | 'pending'>('all');
+  const [searchTerm, setSearchTerm] = useState('');
   const { transactions, receiptSettings } = useAppContext();
   const [previewTx, setPreviewTx] = useState<{ tx: any, type: 'client' | 'china' } | null>(null);
 
   const partnerTxs = transactions.filter(t => t.partnerEmail === userEmail);
-  const filtered = filter === 'all' ? partnerTxs : filter === 'paid' ? partnerTxs.filter(t => t.status === 'Payé') : partnerTxs.filter(t => t.status === 'Confirmé' || t.status === 'Validé');
+  const searched = searchTerm.trim()
+    ? partnerTxs.filter(t => {
+      const term = searchTerm.toLowerCase();
+      return t.name.toLowerCase().includes(term)
+        || t.ref.toLowerCase().includes(term)
+        || t.receiverName.toLowerCase().includes(term)
+        || t.phone.toLowerCase().includes(term);
+    })
+    : partnerTxs;
+  const filtered = filter === 'all' ? searched : filter === 'paid' ? searched.filter(t => t.status === 'Payé') : searched.filter(t => t.status === 'Confirmé' || t.status === 'Validé');
 
   const statusColor = (s: string) => s === 'Payé' ? 'text-green-500' : (s === 'Confirmé' || s === 'Validé') ? 'text-yellow-500' : 'text-red-400';
   const statusIcon = (s: string) => s === 'Payé' ? <CheckCircle className="w-3 h-3" /> : s === 'Annulé' ? <XCircle className="w-3 h-3" /> : <Clock className="w-3 h-3" />;
 
   return (
     <div className="flex-1 w-full max-w-md mx-auto p-5 space-y-4 overflow-y-auto pb-28">
-      <div className="flex items-center justify-between pt-2">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-gray-400">JOURNAL</p>
-          <h1 className="text-2xl font-bold text-primary">Historique</h1>
-        </div>
-        <button className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center">
-          <Filter className="w-4 h-4 text-gray-500" />
-        </button>
+      <div className="pt-2">
+        <p className="text-xs font-semibold uppercase tracking-widest text-gray-400">JOURNAL</p>
+        <h1 className="text-2xl font-bold text-primary">Historique</h1>
       </div>
 
       {/* Search */}
       <div className="relative">
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-        <input className="w-full bg-white rounded-2xl py-3 pl-11 pr-4 text-sm text-primary shadow-sm outline-none" placeholder="Rechercher un transfert..." />
+        <input
+          value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)}
+          className="w-full bg-white rounded-2xl py-3 pl-11 pr-4 text-sm text-primary shadow-sm outline-none" placeholder="Rechercher par nom, réf, téléphone..." />
       </div>
 
       {/* Filter pills */}
@@ -727,14 +736,20 @@ function PartnerGestionScreen({ userEmail }: { userEmail: string }) {
 }
 // ─── PROFILE ──────────────────────────────────────────────────────────────────
 function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name: string, email: string, role: Role } }) {
-  const { transactions, partnerReserve, encaissement, accounts, settleProfits, receiptSettings, setReceiptSettings, routeRates, updateRouteRate, deleteRouteRate } = useAppContext();
+  const { transactions, partnerReserve, encaissement, accounts, settleProfits, receiptSettings, setReceiptSettings, routeRates, updateRouteRate, deleteRouteRate, updatePassword, updateProfile } = useAppContext();
   const [viewingReceipts, setViewingReceipts] = useState(false);
   const [viewingRoutes, setViewingRoutes] = useState(false);
+  const [viewingProfileEdit, setViewingProfileEdit] = useState(false);
   const [editingRoute, setEditingRoute] = useState<string | null>(null);
   const [newRate, setNewRate] = useState("");
   const [showAddRoute, setShowAddRoute] = useState(false);
   const [newRouteName, setNewRouteName] = useState("");
   const [newRouteRate, setNewRouteRate] = useState("");
+  const [editName, setEditName] = useState(user.name);
+  const [editPassword, setEditPassword] = useState('');
+  const [editPasswordConfirm, setEditPasswordConfirm] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [profileMsg, setProfileMsg] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   const handleRateUpdate = async (route: string) => {
     const parsed = parseFloat(newRate);
@@ -791,12 +806,104 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
 
   const items = [
     { id: 'dev_profile', icon: Edit3, label: 'Modifier le profil', color: 'text-blue-500', bg: 'bg-blue-50' },
-    { id: 'dev_notif', icon: Bell, label: 'Notifications', color: 'text-purple-500', bg: 'bg-purple-50' },
     ...(user.role === 'admin' ? [
       { id: 'dev_routes', icon: Globe, label: 'Gestion des routes', color: 'text-cyan-500', bg: 'bg-cyan-50' },
       { id: 'receipt_settings', icon: FileText, label: 'Paramètres des Reçus', color: 'text-orange-500', bg: 'bg-orange-50' }
     ] : []),
   ];
+
+  if (viewingProfileEdit) {
+    return (
+      <div className="flex-1 w-full max-w-md mx-auto p-5 space-y-5 overflow-y-auto pb-28">
+        <div className="flex items-center gap-3 pt-2">
+          <button onClick={() => { setViewingProfileEdit(false); setProfileMsg(null); }} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center">
+            <ChevronRight className="w-5 h-5 text-gray-400 rotate-180" />
+          </button>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-400">COMPTE</p>
+            <h1 className="text-xl font-bold text-primary">Modifier le Profil</h1>
+          </div>
+        </div>
+
+        <AnimatePresence>
+          {profileMsg && (
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className={`p-3 rounded-xl text-xs font-medium ${profileMsg.type === 'success' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}>
+              {profileMsg.text}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="ios-card bg-white p-5 space-y-4">
+          <h3 className="text-sm font-bold text-primary">Informations</h3>
+          <div>
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1 block">Nom / Société</label>
+            <input value={editName} onChange={e => setEditName(e.target.value)}
+              className="w-full bg-[#F2F2F7] rounded-xl py-3 px-4 text-sm text-primary outline-none" />
+          </div>
+          <div>
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1 block">Email</label>
+            <input value={user.email} disabled
+              className="w-full bg-[#F2F2F7] rounded-xl py-3 px-4 text-sm text-gray-400 outline-none cursor-not-allowed" />
+          </div>
+          <button
+            onClick={async () => {
+              if (editName.trim() && editName !== user.name) {
+                await updateProfile({ name: editName.trim() });
+                setProfileMsg({ type: 'success', text: 'Nom mis à jour avec succès !' });
+              }
+            }}
+            disabled={!editName.trim() || editName === user.name}
+            className="w-full py-3 bg-primary disabled:bg-gray-300 text-white rounded-xl font-bold text-sm">
+            Enregistrer le nom
+          </button>
+        </div>
+
+        <div className="ios-card bg-white p-5 space-y-4">
+          <h3 className="text-sm font-bold text-primary">Changer le mot de passe</h3>
+          <div>
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1 block">Nouveau mot de passe</label>
+            <div className="relative">
+              <input value={editPassword} onChange={e => setEditPassword(e.target.value)}
+                type={showPassword ? 'text' : 'password'}
+                className="w-full bg-[#F2F2F7] rounded-xl py-3 px-4 pr-12 text-sm text-primary outline-none" placeholder="Min. 6 caractères" />
+              <button onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-400">
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1 block">Confirmer le mot de passe</label>
+            <input value={editPasswordConfirm} onChange={e => setEditPasswordConfirm(e.target.value)}
+              type={showPassword ? 'text' : 'password'}
+              className="w-full bg-[#F2F2F7] rounded-xl py-3 px-4 text-sm text-primary outline-none" placeholder="Répéter le mot de passe" />
+          </div>
+          {editPassword && editPasswordConfirm && editPassword !== editPasswordConfirm && (
+            <p className="text-[10px] text-red-500 font-medium">Les mots de passe ne correspondent pas.</p>
+          )}
+          <button
+            onClick={async () => {
+              if (editPassword.length < 6) {
+                setProfileMsg({ type: 'error', text: 'Le mot de passe doit contenir au moins 6 caractères.' });
+                return;
+              }
+              const result = await updatePassword(editPassword);
+              if (result.success) {
+                setProfileMsg({ type: 'success', text: 'Mot de passe mis à jour avec succès !' });
+                setEditPassword('');
+                setEditPasswordConfirm('');
+              } else {
+                setProfileMsg({ type: 'error', text: result.error || 'Erreur inconnue' });
+              }
+            }}
+            disabled={!editPassword || editPassword.length < 6 || editPassword !== editPasswordConfirm}
+            className="w-full py-3 bg-primary disabled:bg-gray-300 text-white rounded-xl font-bold text-sm">
+            Mettre à jour le mot de passe
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (viewingRoutes) {
     return (
@@ -1050,9 +1157,9 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
               if (item.id === 'receipt_settings') {
                 setViewingReceipts(true);
               } else if (item.id === 'dev_profile') {
-                alert('Cette option permettra prochainement de modifier le nom, mot de passe et avatar du compte.');
-              } else if (item.id === 'dev_notif') {
-                alert('Les préférences de notifications push / email seront configurables ici.');
+                setViewingProfileEdit(true);
+                setEditName(user.name);
+                setProfileMsg(null);
               } else if (item.id === 'dev_routes') {
                 setViewingRoutes(true);
               }
@@ -1076,8 +1183,8 @@ function ProfileScreen({ onLogout, user }: { onLogout: () => void, user: { name:
 
 // ─── ADMIN SCREENS ────────────────────────────────────────────────────────────
 
-function AdminOverviewScreen() {
-  const { transactions, routeRates, updateRouteRate, deleteRouteRate, partnerReserve, encaissement } = useAppContext();
+function AdminOverviewScreen({ onNavigate }: { onNavigate: (tab: 'deposits') => void }) {
+  const { transactions, routeRates, updateRouteRate, deleteRouteRate, partnerReserve, encaissement, bulkTransfers } = useAppContext();
   const [editingRoute, setEditingRoute] = useState<string | null>(null);
   const [newRate, setNewRate] = useState("");
   const [showAddRoute, setShowAddRoute] = useState(false);
@@ -1198,17 +1305,29 @@ function AdminOverviewScreen() {
       </div>
 
       <div className="ios-card bg-white space-y-3">
-        <h3 className="text-sm font-bold text-primary">Action Requise</h3>
-        <div className="flex items-center justify-between p-3 bg-red-50 rounded-xl">
-          <div className="flex items-center gap-3">
-            <AlertCircle className="w-5 h-5 text-red-500" />
-            <div>
-              <div className="text-sm font-bold text-red-700">Recharger Wallet CNY</div>
-              <div className="text-[10px] text-red-500 font-medium">Solde actuel très bas (≈ 1500 CNY)</div>
+        <h3 className="text-sm font-bold text-primary">Réserve CNY Globale</h3>
+        {(() => {
+          const totalRemainingCNY = bulkTransfers
+            .filter(b => b.status === 'Confirmé')
+            .reduce((acc, b) => acc + (b.remainingCNY || 0), 0);
+          const isLow = totalRemainingCNY < 5000;
+          return (
+            <div className={`flex items-center justify-between p-3 rounded-xl ${isLow ? 'bg-red-50' : 'bg-green-50'}`}>
+              <div className="flex items-center gap-3">
+                {isLow ? <AlertCircle className="w-5 h-5 text-red-500" /> : <CheckCircle className="w-5 h-5 text-green-500" />}
+                <div>
+                  <div className={`text-sm font-bold ${isLow ? 'text-red-700' : 'text-green-700'}`}>
+                    {isLow ? 'Recharger Wallet CNY' : 'Solde CNY suffisant'}
+                  </div>
+                  <div className={`text-[10px] font-medium ${isLow ? 'text-red-500' : 'text-green-500'}`}>
+                    Solde actuel : {formatMoney(totalRemainingCNY)} CNY
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => onNavigate('deposits')} className={`text-xs text-white px-3 py-1.5 rounded-full font-bold ${isLow ? 'bg-red-500' : 'bg-green-500'}`}>Gérer</button>
             </div>
-          </div>
-          <button className="text-xs bg-red-500 text-white px-3 py-1.5 rounded-full font-bold">Gérer</button>
-        </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1581,56 +1700,6 @@ function AdminPartnersScreen() {
   );
 }
 
-// ─── BOTTOM NAV ───────────────────────────────────────────────────────────────
-type NavTabDef = { id: Tab; label: string; icon: React.ElementType; highlight?: boolean };
-
-function BottomNav({ role, activeTab, onChange }: { role: Role; activeTab: Tab; onChange: (t: Tab) => void }) {
-  const partnerTabs: NavTabDef[] = [
-    { id: 'home', label: 'Accueil', icon: Home },
-    { id: 'history', label: 'Historique', icon: History },
-    { id: 'add', label: '', icon: PlusCircle, highlight: true },
-    { id: 'gestion', label: 'Gestion', icon: BookOpen },
-    { id: 'profile', label: 'Profil', icon: User },
-  ];
-
-  const adminTabs: NavTabDef[] = [
-    { id: 'overview', label: 'Accueil', icon: PieChart },
-    { id: 'deposits', label: 'Dépôts', icon: Landmark },
-    { id: 'operations', label: 'Opérations', icon: CheckCircle },
-    { id: 'partners', label: 'Partenaires', icon: Users },
-    { id: 'profile', label: 'Profil', icon: User },
-  ];
-
-  const tabs = role === 'admin' ? adminTabs : partnerTabs;
-
-  return (
-    <div className="fixed bottom-0 left-0 right-0 z-50" style={{ background: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(20px)', borderTop: '0.5px solid rgba(0,0,0,0.08)' }}>
-      <div className="flex items-end justify-around h-16 px-2 max-w-md mx-auto">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button key={tab.id} onClick={() => onChange(tab.id)} className={`flex flex-col items-center justify-center flex-1 py-2 transition-all ${tab.highlight ? 'mb-1' : ''}`}>
-              {tab.highlight ? (
-                <div className="bg-primary p-3 rounded-full shadow-lg -mt-8 active:scale-95 transition-transform border-[3px] border-white">
-                  <Icon className="w-6 h-6 text-white" />
-                </div>
-              ) : (
-                <>
-                  <div className="relative">
-                    <Icon className={`w-6 h-6 ${isActive ? 'text-primary' : 'text-gray-400'}`} />
-                    {isActive && <motion.div layoutId="dot" className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-primary rounded-full" />}
-                  </div>
-                  <span className={`text-[10px] font-medium mt-1 ${isActive ? 'text-primary' : 'text-gray-400'}`}>{tab.label}</span>
-                </>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -1762,7 +1831,7 @@ export default function App() {
           {activeTab === 'history' && <motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><HistoryScreen userEmail={currentUser.email} /></motion.div>}
           {activeTab === 'add' && <motion.div key="add" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><NewTransferScreen userEmail={currentUser.email} /></motion.div>}
           {activeTab === 'gestion' && <motion.div key="gestion" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PartnerGestionScreen userEmail={currentUser.email} /></motion.div>}
-          {activeTab === 'overview' && <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><AdminOverviewScreen /></motion.div>}
+          {activeTab === 'overview' && <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><AdminOverviewScreen onNavigate={(tab) => setActiveTab(tab)} /></motion.div>}
           {activeTab === 'deposits' && <motion.div key="deposits" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><AdminDepositsScreen /></motion.div>}
           {activeTab === 'operations' && <motion.div key="operations" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><AdminOperationsScreen /></motion.div>}
           {activeTab === 'partners' && <motion.div key="partners" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><AdminPartnersScreen /></motion.div>}
